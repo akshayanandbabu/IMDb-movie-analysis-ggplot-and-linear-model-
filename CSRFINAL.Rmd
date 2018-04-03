@@ -1,0 +1,215 @@
+---
+title: "CSR Project"
+author: "Akshay and Ritvik"
+date: "29 July 2017"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r}
+#LOADING REQUIRED PACKAGES
+library(tidyverse)
+library(tidyr)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(base)               
+library(lubridate)
+library(RSQLite)
+library(forcats)
+
+
+```
+
+#                                             READING THE SCRAPED FILE 
+
+```{r}
+#Setting Working Directory
+setwd("C:/Users/User/Downloads")
+
+#Reading CSV and storing it into an object
+pro <- read.csv("project3.csv")
+pro<-as.data.frame(pro)   #Converting it into a data frame
+
+
+project <- select(pro,-(links:links.href))# to remove the links that are scraped default by the scraper
+
+```
+
+
+
+
+#                                           CLEANING THE SCRAPED FILE     
+
+```{r}
+
+#CLEANING OF MOVIE TITLE
+
+#Since the Movie_Title variable was of factor class, we decided to convert it into a character string using lapply(), so we can use the gsub function to clean.
+
+movie_name<- select(project,Movie_Title)
+movie_name[]<-lapply(movie_name,as.character)
+# Removing the year of release from the movie title
+project$Movie_Title<-gsub("[(0-9)]","",movie_name$Movie_Title)
+```
+#------------------------------------------------------------------------------------------------------------
+```{r}
+#Cleaning International Release dates and converting into Date-Time format
+
+# The initial international release date was in the format: 21st December 2012. The problem we faced with the international_release column is some cells had multiple international release dates, belonging to each country they were released in. Most of the release dates in the cell were same, i.e the movie was released on the same date on each country of release, so we extracted the first date in the cell.
+#Now to convert the date into a general date format we used the mdy() function in the lubridate package
+project$international_release<-str_extract(project$international_release,pattern="[[a-zA-Z]+ [0-9]+[a-z, 0-9]]+")
+project$international_release<-mdy(project$international_release)
+```
+#---------------------------------------------------------------------------------------------------------------
+
+```{r}
+# Cleaning production budget, domestic gross, international gross and worldwide gross
+
+#Cleaning these columns wasnt complicated as these variables were already in USD for movies that were released outside the united states.We did not have to perform conversion based on conversion rates.
+#We cleaned these variables by removing the $ and comma(,) and converted into class numeric to perform analysis.
+project$production_budget<- as.numeric(gsub('[$,]', '', project$production_budget))
+project$domestic_box_office<- as.numeric(gsub('[$,]', '', project$domestic_box_office))
+project$international_box_office<- as.numeric(gsub('[$,]', '', project$international_box_office))
+project$worldwide_box_office<- as.numeric(gsub('[$,]', '', project$worldwide_box_office))
+```
+
+#---------------------------------------------------------------------------------------------------------------
+```{r}
+#Cleaning the duration and converting it into a numeric
+
+#We performed an extraction on the variable to extract the running time of a movie in minutes. For example the initial data had duration as "121 minutes". We extracted only the number and converted it into class numeric to perform analysis.
+
+project$duration<-as.numeric(str_extract_all(project$duration,"[0-9]+",""))
+```
+
+#-----------------------------------------------------------------------------------------------------------------
+```{r}
+#cleaning domestic release dates and converting into date format
+
+#We followed the same procedure to clean domestic release dates as we used to clean international dates.Since domestic release dates have only one value for each country we didnt go through the problem of multiple dates as we faced with international dates.
+project$domestic_release<-str_extract(project$domestic_release,pattern="[[a-zA-Z]+ [0-9]+[a-z, 0-9]]+")
+project$domestic_release<-mdy(project$domestic_release)
+```
+
+#-------------------------------------------------------------------------------------------------------------------
+```{r}
+# Writing the clean data frame into a CSV
+clean_project<-project
+#write_csv(clean_project,"clean_pro.csv")  
+#We made this into a comment because the file was already created and R displayed an error stating file already exists
+head(clean_project)
+
+```
+
+#                                              STORING IN SQLLite 
+```{r}
+#Opening a SQLLite connection and creating a database
+dbase<-dbConnect(SQLite(),dbname="AR_Project.sqlite")
+summary(dbase)
+
+#copying the contents of the clean csv into the database
+dbWriteTable(dbase,"arpro",clean_project,overwrite=TRUE)
+
+
+```
+#                                           RETRIEVING FROM SQLLite 
+```{r}
+#
+arpro <- dbGetQuery(dbase, "select * from arpro")
+```
+
+#                                             GRAPHICAL ANALYSIS 
+```{r}
+#-----------------------------------------DISTRIBUTION ANALYSIS-----------------------------------------------------
+
+#Plotting a histogram to find the distribution of IMDb score across the data set
+analysis1.1 <- dbGetQuery(dbase, "select imdb_score,worldwide_box_office from arpro") 
+
+analysis1.1 %>%
+  ggplot(aes(imdb_score))+ 
+  geom_histogram(aes(y=..density..,fill=..count..))+
+   stat_function(fun = dnorm,color="red",args = list(mean=mean(analysis1.1$imdb_score),
+                                                     sd=sd(analysis1.1$imdb_score)))
+
+# From the graph we can see the distribution of IMDB score follows a  near normal distribution neglecting a few outliers. We can see the most number of movies lie between the 6.2 to 7.5 rating.
+
+#-----------------------------------------------------------------------------------------------------------------
+```
+
+```{r}
+# Distribution of movies based on content rating
+analysis1.2<-dbGetQuery(dbase, "select content_rating,worldwide_box_office from arpro")
+
+analysis1.2 %>%
+  ggplot(aes(fct_infreq(content_rating)))+
+  geom_bar()
+
+# the fct_infreq() function is used to order the count of movies and is present in the "forcats" package.
+
+#From this plot we see that movies that are rated R occur the highest in the data-set and the content ratings are not skewed. Since the data set is a list of movies with highest box office collection, we can make a possible conclusion that R rated movies fare well in box office collections. 
+
+```
+```{r}
+
+analysis1.3<-dbGetQuery(dbase, "select country, count(country) as count_country from arpro
+group by country")
+class(analysis1.3$count_country)
+                        
+top_countries<- select(analysis1.3,country,count_country)%>%
+  filter(count_country>15)
+
+top_countries%>%
+  ggplot(aes(country,count_country))+
+  geom_point()+
+  coord_flip()
+
+```
+
+
+
+```{r}
+# ------------------------------------- ECONOMETRIC ANALYSIS ------------------------------------------------------
+# Plotting a relation between the IMDb score and world wide box office to check if there is a trend
+analysis2 <- dbGetQuery(dbase, "select Genre,imdb_score,worldwide_box_office from arpro") %>%
+  ggplot(aes(imdb_score,worldwide_box_office))+
+  geom_point(aes(colour=Genre))+ 
+  geom_smooth()
+analysis2
+
+#From the plot we see for this movie data set there is no significant effect of IMDb rating on the overall box office collection. One possible reason for this is the normal distribution of IMDb ratings in the data set.The other possibility that comes to mind is that some low budget movies have high ratings in IMDb because only very few people have voted for the movie. So if only 10 people vote a 8.0 rating for the movie, the IMDb average rating for that movie becomes 8.0 even though its a low budget/low collection movie and only a handful of people have voted for its rating.
+```
+
+
+
+
+```{r}
+# Genre vs worldwide box office collection boxplot. 
+
+analysis3 <- dbGetQuery (dbase,"select Genre,worldwide_box_office from arpro
+                        where worldwide_box_office is not 'NA' ") %>%
+  ggplot(aes(Genre,worldwide_box_office))+ geom_boxplot(aes(colour=Genre))+
+  coord_flip()
+analysis3
+#We used the coord_flip() to avoid clustering and overlapping of genre labels on the plot.
+
+#We used the boxplot to see the range of the worldwide income for each movie genre.It is interesting to see musicals have the highest range for worldwide box office with most movies earning higher than the median. From the plot we can also see that documentaries and black comedy movies earn the least in worldwide box offices. We think this is due the fact that most of the documentaries created domestically do not recieve enough production budget to release internationally and attract only a portion of an audience even if released internationally.
+#We can see the median to be lying exactly towards the centre for concerts/performances. This is owing to the reason that most performances and concerts are performed locally and there is almost no international release. This makes the worldwide box office to rely completely on the domestic box office. 
+
+#Neglecting a few outliers that may affect the median, we can conclude by saying all other genres perform well internationally.
+
+```
+
+
+
+```{r}
+#----------LINEAR MODEL TO FIND CORRELATION BETWEEN THE VARIABLES AND WORLDWIDE BOX OFFICE COLLECTION---------------
+data3 <- dbGetQuery (dbase,"select domestic_box_office,imdb_score,duration,production_budget,worldwide_box_office from arpro where worldwide_box_office is not 'NA' and duration is not 'NA' ")
+ analysis4 <- lm(worldwide_box_office~production_budget+duration+imdb_score,data=data3)
+analysis5 <-  lm(worldwide_box_office~domestic_box_office,data=data3)
+ summary(analysis3)
+summary(analysis4)
+
+```
